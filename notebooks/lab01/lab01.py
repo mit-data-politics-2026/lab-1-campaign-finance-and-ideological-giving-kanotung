@@ -1,12 +1,13 @@
 import marimo
 
-__generated_with = "0.19.7"
+__generated_with = "0.20.1"
 app = marimo.App(width="medium")
 
 
 @app.cell
 def _():
     import marimo as mo
+
     return (mo,)
 
 
@@ -15,6 +16,7 @@ def _():
     import polars as pl
     import altair as alt
     import numpy as np
+
     return alt, np, pl
 
 
@@ -105,7 +107,13 @@ def _(mo, pl):
             ),
         ]
     )
-    return contributions, contributors_meta, matrix_df, occ_industry
+    return (
+        contributions,
+        contributors_meta,
+        matrix_df,
+        occ_industry,
+        recipients_meta,
+    )
 
 
 @app.cell
@@ -212,9 +220,22 @@ def _(mo):
 
 
 @app.cell
-def _(mo):
+def _(contributions, mo, pl):
     # ---- Exercise 0 ----
-    mit_top_donors = ...  # YOUR CODE
+    top5 = (
+        contributions
+        .filter(
+            pl.col("contributor_employer")
+              .str.to_lowercase()
+              .str.contains("mit")
+        )
+        .group_by(["bonica_cid", "contributor_name"])
+        .agg(pl.col("total_amount").sum().alias("total_donated"))
+        .sort("total_donated", descending=True)
+        .head(5)
+    )
+
+    mit_top_donors = top5  # YOUR CODE
 
     mo.stop(
         mit_top_donors is ...,
@@ -232,7 +253,7 @@ def _(mo):
     mo.md("""
     **Reflection:** Who is MIT's biggest political donor? Were you surprised?
 
-    *YOUR ANSWER HERE*
+    *MIT's biggest political donor is Ronald Rivest. I'm surprised because I never heard the name before; he isn't well-known amonngst undergrads.*
     """)
     return
 
@@ -266,18 +287,45 @@ def _(mo):
 
 
 @app.cell
-def _(mo):
+def _(alt, contributions, mo, pl):
     # ---- Exercise 1 ----
     # Steps 1-2: Filter to House/Senate candidates and the two major parties,
     # add an in_state column, group by party and in_state, and add labels.
     _congressional = (
-        ...
+        contributions
+        .filter(
+            pl.col("seat").is_in(["federal:house", "federal:senate"]) &
+            pl.col("recipient_party").is_in(["100", "200"])
+        )
     )  # YOUR CODE: filter contributions on seat and recipient_party
+
+    _congressional.height
 
     # Add an in_state column (True when contributor_state == recipient_state)
     # then group by recipient_party and in_state, summing total_amount.
     # Add readable labels for party and in_state.
-    in_out_state = ...  # YOUR CODE
+
+    in_out_state = (
+        _congressional
+        .with_columns(
+            (pl.col("contributor_state").fill_null("") ==
+             pl.col("recipient_state").fill_null(""))
+            .alias("in_state")
+        )
+        .group_by(["recipient_party", "in_state"])
+        .agg(pl.col("total_amount").sum().alias("total_amount"))
+        .with_columns([
+            pl.when(pl.col("recipient_party") == "100")
+              .then(pl.lit("Democrat"))
+              .otherwise(pl.lit("Republican"))
+              .alias("Party"),
+            pl.when(pl.col("in_state"))
+              .then(pl.lit("In-State"))
+              .otherwise(pl.lit("Out-of-State"))
+              .alias("Donation Origin"),
+        ])
+    )
+    # YOUR CODE
 
     mo.stop(
         _congressional is ... or in_out_state is ...,
@@ -286,18 +334,32 @@ def _(mo):
         ),
     )
 
-    # Step 3: Create a normalized stacked bar chart
-    _ex1_chart = ...  # YOUR CODE
 
-    mo.stop(
-        _ex1_chart is ...,
-        mo.md(
-            "⚠️ **Complete Exercise 1, Step 3:** Create a normalized stacked bar chart."
-        ),
+    # Step 3: Create a normalized stacked bar chart
+    import json
+
+    values = json.loads(in_out_state.write_json())
+
+    _ex1_chart = (
+        alt.Chart(alt.Data(values=values), title="In-State vs Out-of-State Donations by Party")
+        .mark_bar()
+        .encode(
+            x=alt.X("total_amount:Q", stack="normalize", title="Share of Total Donations"),
+            y=alt.Y("Party:N", title=None),
+            color=alt.Color("Donation Origin:N"),
+            tooltip=[
+                alt.Tooltip("Party:N"),
+                alt.Tooltip("Donation Origin:N"),
+                alt.Tooltip("total_amount:Q", format=",.0f"),
+            ],
+        )
+        .properties(width=600, height=250)
     )
 
+    # YOUR CODE
+
     _ex1_chart
-    return
+    return (json,)
 
 
 @app.cell
@@ -305,7 +367,7 @@ def _(mo):
     mo.md("""
     **Reflection:** Which party receives a larger share from out-of-state donors? What does that tell you about the nationalization of campaign finance?
 
-    *YOUR ANSWER HERE*
+    *Republicans recieve a larger share from out-of-state donors, though the Democrats are close. It tells me that campaign finance is fairly nationalized, with different states having stake in each other.*
     """)
     return
 
@@ -390,7 +452,7 @@ def _(mo):
 
 
 @app.cell
-def _(contributions, mo, occ_industry):
+def _(alt, contributions, mo, occ_industry, pl):
     # ---- Exercise 2 ----
 
     # Step 1: Join contributions with the occupation-to-industry mapping
@@ -399,7 +461,12 @@ def _(contributions, mo, occ_industry):
     )
 
     # Step 2: Filter to major parties and non-null industries
-    _filtered = ...  # YOUR CODE: filter _with_industry with two conditions
+    _filtered = (
+        _with_industry.filter(
+            pl.col("recipient_party").is_in(["100", "200"])
+            & pl.col("industry").is_not_null()
+        )
+    )  # YOUR CODE: filter _with_industry with two conditions
 
     mo.stop(
         _filtered is ...,
@@ -409,7 +476,17 @@ def _(contributions, mo, occ_industry):
     )
 
     # Step 3: Group by industry and party, sum amounts, add party label
-    industry_party = ...  # YOUR CODE
+    industry_party = (
+        _filtered
+        .group_by(["industry", "recipient_party"])
+        .agg(pl.col("total_amount").sum().alias("total"))
+        .with_columns(
+            pl.when(pl.col("recipient_party") == "100")
+            .then(pl.lit("Democrat"))
+            .otherwise(pl.lit("Republican"))
+            .alias("party")
+        )
+    )  # YOUR CODE
 
     mo.stop(
         industry_party is ...,
@@ -419,7 +496,31 @@ def _(contributions, mo, occ_industry):
     )
 
     # Step 4: Create a normalized stacked bar chart
-    _ex2_chart = ...  # YOUR CODE
+    _top_inds = (
+        industry_party.group_by("industry")
+        .agg(pl.col("total").sum().alias("grand_total"))
+        .sort("grand_total", descending=True)
+        .head(15)
+        .select("industry")
+    )
+
+    industry_party_top = industry_party.join(_top_inds, on="industry")
+
+    _ex2_chart = (
+        alt.Chart(industry_party_top, title="Industry Donation Split by Party")
+        .mark_bar()
+        .encode(
+            x=alt.X("total:Q", title="Share of Total Donated ($)", stack="normalize"),
+            y=alt.Y("industry:N", sort="-x", title=None),
+            color=alt.Color(
+                "party:N",
+                scale=alt.Scale(domain=["Democrat", "Republican"], range=["#2166ac", "#b2182b"]),
+                title="Party",
+            ),
+            tooltip=["industry:N", "party:N", "total:Q"]
+        )
+        .properties(width=650, height=400)
+    )  # YOUR CODE
 
     mo.stop(
         _ex2_chart is ...,
@@ -437,7 +538,7 @@ def _(mo):
     mo.md("""
     **Reflection:** Which industries lean most Democratic? Most Republican? What might explain these patterns?
 
-    *YOUR ANSWER HERE*
+    *The industries that lean the most Democratic are education and science. The industries that lean the most Republican are business and government. What might explain these patterns is value alignment: Democrats tend to support public investment and regulation, while Republicans emphasize lower taxes and deregulation. *
     """)
     return
 
@@ -463,11 +564,79 @@ def _(mo):
 
 
 @app.cell
-def _(mo):
+def _(alt, contributions, mo, pl):
     # ---- Exercise 3 ----
     # Pick one of the questions from the prompt and implement your analysis here.
 
-    _ex3_result = ...  # YOUR CODE: analysis + visualization
+    # List of companies to analyze
+    companies = ["google", "amazon", "walmart", "exxon", "goldman"]
+
+    # Filter to those employers + two major parties
+    _company_data = (
+        contributions
+        .with_columns(
+            pl.col("contributor_employer")
+            .cast(pl.Utf8)
+            .str.to_lowercase()
+            .alias("employer_lc")
+        )
+        .filter(
+            pl.col("recipient_party").is_in(["100", "200"])
+            & pl.any_horizontal([
+                pl.col("employer_lc").str.contains(c) for c in companies
+            ])
+        )
+    )
+
+    # Create a readable company label
+    _company_labeled = (
+        _company_data
+        .with_columns([
+            pl.when(pl.col("employer_lc").str.contains("google"))
+            .then(pl.lit("Google"))
+            .when(pl.col("employer_lc").str.contains("amazon"))
+            .then(pl.lit("Amazon"))
+            .when(pl.col("employer_lc").str.contains("walmart"))
+            .then(pl.lit("Walmart"))
+            .when(pl.col("employer_lc").str.contains("exxon"))
+            .then(pl.lit("Exxon"))
+            .otherwise(pl.lit("Goldman Sachs"))
+            .alias("company")
+        ])
+    )
+
+    # Group by company and party
+    company_party = (
+        _company_labeled
+        .group_by(["company", "recipient_party"])
+        .agg(pl.col("total_amount").sum().alias("total"))
+        .with_columns(
+            pl.when(pl.col("recipient_party") == "100")
+            .then(pl.lit("Democrat"))
+            .otherwise(pl.lit("Republican"))
+            .alias("party")
+        )
+    )
+
+    # Normalized stacked bar chart
+    _ex3_result = (
+        alt.Chart(company_party, title="Party Split of Donations by Company Employees")
+        .mark_bar()
+        .encode(
+            x=alt.X("total:Q", stack="normalize", title="Share of Total Donations"),
+            y=alt.Y("company:N", sort="-x", title=None),
+            color=alt.Color(
+                "party:N",
+                scale=alt.Scale(
+                    domain=["Democrat", "Republican"],
+                    range=["#2166ac", "#b2182b"]
+                ),
+                title="Party"
+            ),
+            tooltip=["company:N", "party:N", "total:Q"]
+        )
+        .properties(width=650, height=350)
+    )  # YOUR CODE: analysis + visualization
 
     mo.stop(
         _ex3_result is ...,
@@ -485,7 +654,7 @@ def _(mo):
     mo.md("""
     **Reflection:** Summarize your findings. What patterns did you find and what might explain them?
 
-    *YOUR ANSWER HERE*
+    *Google, Amazon, and Exxon (surprisingly!) lean Democrat while Walmart and Goldman Sachs lean Republican. Big tech company employees align more with Democrats, perhaps because of investment in innovation. Big finance compoany employees align more with Republicans, perhaps because of value in private goods.*
     """)
     return
 
@@ -630,7 +799,7 @@ def _(mo):
     mo.md("""
     **Reflection:** In your own words, what does this normalization accomplish? Why do we need to remove the effects of donor prolificness and candidate popularity before running PCA?
 
-    *YOUR ANSWER HERE*
+    *This normalization accomplishes removing differences in how active donors are and how popular candidates are, so the matrix better represents political affinity. If the normalization was not applied, activity and popularity would skew the results along those variables rather than based on ideaology. So, normalizaton makes the PCA is more likely to recover the  liberal–conservative axis instead of voting activity.*
     """)
     return
 
@@ -694,7 +863,7 @@ def _(mo):
     mo.md("""
     **Reflection:** Why might PC1 dominate so strongly in campaign finance data? What does the gap between PC1 and PC2 tell us about the structure of American political donations?
 
-    *YOUR ANSWER HERE*
+    *PC1 might dominate so strongly because politics fall in line with party far more than any other variable. The gap between PC1 and PC2 tells us that athe structure of American political donations is based mostly on one variable, rather than a wide variety.*
     """)
     return
 
@@ -731,7 +900,7 @@ def _(mo):
 
 
 @app.cell
-def _(X, mo, np, pl, recipient_ids, scores):
+def _(X, alt, json, mo, np, pl, recipient_ids, recipients_meta, scores):
     # ---- Exercise 6 ----
 
     # Step 1 (provided): Compute each recipient's ideology score as the
@@ -751,7 +920,18 @@ def _(X, mo, np, pl, recipient_ids, scores):
     )
 
     # Step 2: Join with recipients_meta and add a "party" label column
-    recipient_ideology = ...  # YOUR CODE
+    recipient_ideology = (
+        _scores_df
+        .join(recipients_meta, on="bonica_rid", how="left")
+        .with_columns(
+            pl.when(pl.col("recipient_party") == "100")
+            .then(pl.lit("Democrat"))
+            .when(pl.col("recipient_party") == "200")
+            .then(pl.lit("Republican"))
+            .otherwise(pl.lit("Other"))
+            .alias("party")
+        )
+    )  # YOUR CODE
 
     mo.stop(
         recipient_ideology is ...,
@@ -761,7 +941,7 @@ def _(X, mo, np, pl, recipient_ids, scores):
     )
 
     # Step 3: Take a random sample of 50 recipients
-    _sample = ...  # YOUR CODE: use .sample(50)
+    _sample = recipient_ideology.sample(50, seed=42)  # YOUR CODE: use .sample(50)
 
     mo.stop(
         _sample is ...,
@@ -771,7 +951,24 @@ def _(X, mo, np, pl, recipient_ids, scores):
     )
 
     # Step 4: Create a dot chart
-    ideology_chart = ...  # YOUR CODE: alt.Chart(_sample).mark_circle(...)
+
+    _values = json.loads(_sample.write_json())
+
+    ideology_chart = (
+        alt.Chart(alt.Data(values=_values), title="Recipient Ideology Scores (Sample of 50)")
+        .mark_circle(size=60, opacity=0.9)
+        .encode(
+            x=alt.X("ideology_score:Q", title="Ideology score (PC1-based)"),
+            y=alt.Y("recipient_name:N", sort="-x", title=None),
+            color=alt.Color("party:N", title="Party"),
+            tooltip=[
+                alt.Tooltip("recipient_name:N"),
+                alt.Tooltip("party:N"),
+                alt.Tooltip("ideology_score:Q", format=".3f"),
+            ],
+        )
+        .properties(width=700, height=500)
+    )  # YOUR CODE: alt.Chart(_sample).mark_circle(...)
 
     mo.stop(
         ideology_chart is ...,
@@ -822,7 +1019,7 @@ def _(mo):
 
 
 @app.cell
-def _(contributors_meta, donor_ids, mo, np, occ_industry, pl, scores):
+def _(alt, contributors_meta, donor_ids, mo, np, occ_industry, pl, scores):
     # ---- Exercise 7 ----
 
     # Step 1 (provided): Build donor scores DataFrame
@@ -850,7 +1047,48 @@ def _(contributors_meta, donor_ids, mo, np, occ_industry, pl, scores):
     )
 
     # Step 3: Faceted density plot by industry (top 8, excluding "Other")
-    industry_chart = ...  # YOUR CODE
+
+    # Top 8 industries by donor count (exclude "Other")
+    _top_inds = (
+        donor_plot
+        .filter(pl.col("industry") != "Other")
+        .group_by("industry")
+        .len()
+        .sort("len", descending=True)
+        .head(8)
+    )
+
+    top_industries = _top_inds["industry"].to_list()
+
+    # Order industries by mean ideology (so facets are meaningfully sorted)
+    _ind_order = (
+        donor_plot
+        .filter(pl.col("industry").is_in(top_industries))
+        .group_by("industry")
+        .agg(pl.col("pc1_score").mean().alias("mean_pc1"))
+        .sort("mean_pc1")
+    )
+    industry_order = _ind_order["industry"].to_list()
+
+    # Filter to top industries only for plotting
+    _plot_df = donor_plot.filter(pl.col("industry").is_in(top_industries))
+
+    industry_chart = (
+        alt.Chart(_plot_df, title="Donor Ideology Distributions by Industry (Top 8)")
+        .transform_density(
+            "pc1_score",
+            as_=["pc1_score", "density"],
+            groupby=["industry"],
+        )
+        .mark_area(opacity=0.6)
+        .encode(
+            x=alt.X("pc1_score:Q", title="Donor ideology (PC1)"),
+            y=alt.Y("density:Q", title=None),
+            row=alt.Row("industry:N", sort=industry_order, title=None),
+        )
+        .properties(width=650, height=80)
+        .resolve_scale(y="independent")
+    )  # YOUR CODE
 
     mo.stop(
         industry_chart is ...,
